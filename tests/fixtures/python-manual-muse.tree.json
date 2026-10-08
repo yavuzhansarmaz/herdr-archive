@@ -1,0 +1,33 @@
+{
+  "direction": "horizontal",
+  "first": {
+    "command": [
+      "sh",
+      "-c",
+      "trap : INT; claude --model opus --resume SESS-AAAA; exec \"${SHELL:-sh}\""
+    ],
+    "cwd": "/srv/a",
+    "label": "agent",
+    "type": "pane"
+  },
+  "ratio": 0.5,
+  "second": {
+    "direction": "vertical",
+    "first": {
+      "command": [
+        "sh",
+        "-c",
+        "trap : INT; muse resume MUSE-UUID-1; exec \"${SHELL:-sh}\""
+      ],
+      "cwd": "/srv/a",
+      "type": "pane"
+    },
+    "ratio": 0.5,
+    "second": {
+      "cwd": "/srv/other",
+      "type": "pane"
+    },
+    "type": "split"
+  },
+  "type": "split"
+}

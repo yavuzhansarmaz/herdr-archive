@@ -1,0 +1,60 @@
+id = "herdr-archive"
+name = "Archive"
+version = "0.1.0"
+min_herdr_version = "0.9.0"
+description = "Archive agent tabs that have been inactive for days, and restore them with their conversation resumed."
+platforms = ["linux", "macos"]
+
+# v0: direct source build. Graduate to scripts/fetch-or-build.sh
+# (prebuilt + SHA-256, cargo fallback) before announcing — see DESIGN.md §12.
+[[build]]
+command = ["cargo", "build", "--release", "--locked"]
+
+[[startup]]
+command = ["./target/release/herdr-archive", "sweep", "--if-due"]
+
+[[events]]
+on = "pane.agent_status_changed"
+command = ["./target/release/herdr-archive", "track"]
+
+[[events]]
+on = "pane.agent_detected"
+command = ["./target/release/herdr-archive", "track"]
+
+[[events]]
+on = "workspace.focused"
+command = ["./target/release/herdr-archive", "sweep", "--if-due"]
+
+[[actions]]
+id = "restore"
+title = "Archive: restore an archived tab"
+contexts = ["global"]
+command = ["./target/release/herdr-archive", "open-picker"]
+
+[[actions]]
+id = "archive-tab"
+title = "Archive: archive this tab"
+contexts = ["tab"]
+command = ["./target/release/herdr-archive", "open-archive"]
+
+[[actions]]
+id = "sweep-now"
+title = "Archive: sweep now"
+contexts = ["global"]
+command = ["./target/release/herdr-archive", "sweep"]
+
+[[panes]]
+id = "picker"
+title = "Archive"
+placement = "popup"
+width = "80%"
+height = 18
+command = ["./target/release/herdr-archive", "pick"]
+
+[[panes]]
+id = "archive-confirm"
+title = "Archive"
+placement = "popup"
+width = 64
+height = 8
+command = ["./target/release/herdr-archive", "confirm-archive"]

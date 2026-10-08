@@ -1,0 +1,66 @@
+{
+  "archived_at": "2026-09-29T17:00:00Z",
+  "herdr_session": "default",
+  "id": "20260929T170000Z-0f7baf",
+  "layout": {
+    "focused_pane_id": "p1",
+    "root": {
+      "direction": "horizontal",
+      "first": {
+        "cwd": "/srv/a",
+        "label": "agent",
+        "pane_id": "p1",
+        "type": "pane"
+      },
+      "ratio": 0.5,
+      "second": {
+        "direction": "vertical",
+        "first": {
+          "pane_id": "p2",
+          "type": "pane"
+        },
+        "ratio": 0.5,
+        "second": {
+          "cwd": "/srv/other",
+          "pane_id": "p3",
+          "type": "pane"
+        },
+        "type": "split"
+      },
+      "type": "split"
+    },
+    "zoomed": false
+  },
+  "panes": {
+    "p1": {
+      "agent": "claude",
+      "cwd": "/srv/a",
+      "last_activity": "2026-09-20T12:00:00Z",
+      "launch_argv": [
+        "/usr/bin/claude",
+        "--model",
+        "opus"
+      ],
+      "session": {
+        "kind": "id",
+        "source": "herdr:claude",
+        "value": "SESS-AAAA"
+      }
+    },
+    "p2": {
+      "cwd": "/srv/a"
+    },
+    "p3": {
+      "cwd": "/srv/other"
+    }
+  },
+  "session_copies": [],
+  "tab": {
+    "label": "api-work"
+  },
+  "version": 1,
+  "workspace": {
+    "cwd": "/srv/a",
+    "label": "backend"
+  }
+}
