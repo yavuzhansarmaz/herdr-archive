@@ -2,7 +2,7 @@ id = "herdr-archive"
 name = "Archive"
 version = "0.1.0"
 min_herdr_version = "0.9.0"
-description = "Archive agent tabs that have been inactive for days, and restore them with their conversation resumed."
+description = "Park herdr tabs to free memory without losing them — named restore points that resume where you left off."
 platforms = ["linux", "macos"]
 
 # v0: direct source build. Graduate to scripts/fetch-or-build.sh

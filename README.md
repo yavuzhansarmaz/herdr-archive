@@ -1,14 +1,16 @@
 # herdr-archive
 
-Archive [herdr](https://herdr.dev) tabs whose coding agents have been inactive
-for days, and bring any of them back later with the conversation resumed.
-It holds terminals you close to free memory but don't want to lose.
+Park [herdr](https://herdr.dev) tabs to free memory without losing them.
+Each archive is a named restore point — layout, working directories, agent
+sessions — that brings the tab back exactly where you left off, whenever
+you return.
 
-Agent tabs pile up. herdr has no undo for a closed tab, so closing them by
-hand means losing the layout, the working directories and the agent's launch
-flags. Archive closes inactive agent tabs for you and keeps everything needed
-to rebuild them: the split layout, labels, working directories, each agent's
-session id, and the command line the agent was started with.
+Agent tabs pile up and eat RAM. herdr has no undo for a closed tab, so
+closing them by hand means losing the conversation for good. Archive closes
+them for you — by hand with a key, or automatically when idle for days — and
+keeps everything needed to rebuild them: the split layout, labels, working
+directories, each agent's session id, and the command line the agent was
+started with.
 
 Archive coexists with the Python Shelf plugin: it installs as
 `herdr-archive`, keeps its state under `plugins/herdr-archive`, and reads the same
