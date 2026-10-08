@@ -23,6 +23,11 @@ pub struct Entry {
     /// EXPERIMENTAL (U5): unverified against the real CLI.
     pub strip_subcommand2: Option<(String, String)>,
     pub relaunch: Option<String>,
+    /// Basename-prefix program match: set for muse, whose installed binary
+    /// is versioned (`muse-bin-1.4.3-…`, `muse-bin-1.4.4-…`), so launch and
+    /// process detection must accept `muse*`, not just exactly `muse`.
+    /// Relaunch still uses the plain `program` (`muse` resolves on PATH).
+    pub prefix_match: bool,
 }
 
 impl Entry {
@@ -35,6 +40,7 @@ impl Entry {
             strip_subcommand: None,
             strip_subcommand2: None,
             relaunch: None,
+            prefix_match: false,
         }
     }
 }
@@ -79,6 +85,7 @@ fn builtin_entries() -> Vec<(&'static str, Entry)> {
         ("muse", {
             let mut e = Entry::new("muse", &["resume", "{id}"]);
             e.strip_subcommand = Some("resume".into());
+            e.prefix_match = true;
             e
         }),
         // --- New rows (experimental, U1-U5) ---
@@ -146,6 +153,7 @@ fn entry_from_value(v: &Value) -> Entry {
             .and_then(|m| m.get("relaunch"))
             .and_then(Value::as_str)
             .map(str::to_string),
+        prefix_match: false,
     }
 }
 
@@ -164,10 +172,13 @@ pub fn table(overrides: Option<&Map<String, Value>>) -> BTreeMap<String, Entry> 
                 strip_subcommand: None,
                 strip_subcommand2: None,
                 relaunch: None,
+                prefix_match: false,
             });
             // Preserve strip_subcommand2 through overrides (no config key
             // names it, so only the built-in amp pair can set it).
             let pair = base.strip_subcommand2.clone();
+            // Same for prefix_match (only the built-in muse row sets it).
+            let prefix = base.prefix_match;
             let patch = entry_from_value(value);
             if o.contains_key("program") {
                 base.program = patch.program;
@@ -188,6 +199,7 @@ pub fn table(overrides: Option<&Map<String, Value>>) -> BTreeMap<String, Entry> 
                 base.relaunch = patch.relaunch;
             }
             base.strip_subcommand2 = pair;
+            base.prefix_match = prefix;
             merged.insert(name.clone(), base);
         }
     }
@@ -355,7 +367,11 @@ pub fn relaunch_argv(
 }
 
 pub fn matches_program(entry: &Entry, argv0: &str) -> bool {
-    argv0.rsplit('/').next().unwrap_or(argv0) == entry.program
+    let base = argv0.rsplit('/').next().unwrap_or(argv0);
+    base == entry.program
+        || (!entry.program.is_empty()
+            && entry.prefix_match
+            && base.starts_with(entry.program.as_str()))
 }
 
 /// POSIX-quote one argv element (shlex.quote semantics).
@@ -680,5 +696,48 @@ mod tests {
         let t = table(None);
         assert!(relaunch_argv("claude", &t["claude"], "-rf", None).is_err());
         assert!(relaunch_argv("claude", &t["claude"], "", None).is_err());
+    }
+
+    #[test]
+    fn muse_matches_versioned_binaries() {
+        let t = table(None);
+        let muse = &t["muse"];
+        assert!(matches_program(muse, "muse"));
+        // the installed versioned binaries (1.4.3 and 1.4.4 seen live)
+        assert!(matches_program(muse, "muse-bin-1.4.3-R5410.2"));
+        assert!(matches_program(muse, "muse-bin-1.4.4-R5419.1"));
+        assert!(matches_program(
+            muse,
+            "/home/u/.local/bin/muse-bin-1.4.4-R5419.1"
+        ));
+        assert!(!matches_program(muse, "other"));
+        assert!(!matches_program(muse, ""));
+    }
+
+    #[test]
+    fn other_kinds_still_match_exactly() {
+        let t = table(None);
+        assert!(matches_program(&t["claude"], "/usr/bin/claude"));
+        assert!(!matches_program(&t["claude"], "claude-bin-2.0"));
+        assert!(!matches_program(&t["codex"], "codex-resume"));
+        assert!(!matches_program(&t["codex"], "codex2"));
+    }
+
+    #[test]
+    fn muse_prefix_survives_overrides_relaunch_stays_plain() {
+        let ov = json!({"muse": {"relaunch": "plain"}});
+        let t = table(ov.as_object());
+        assert!(matches_program(&t["muse"], "muse-bin-1.4.4-R5419.1"));
+        // relaunch keeps the plain program (`muse` resolves on PATH)
+        assert_eq!(
+            relaunch_argv("muse", &t["muse"], "S", None).unwrap(),
+            sv(&["muse", "resume", "S"])
+        );
+        // ...and a versioned saved argv0 rewrites to it
+        let saved = sv(&["/home/u/.local/bin/muse-bin-1.4.4-R5419.1", "resume", "OLD"]);
+        assert_eq!(
+            relaunch_argv("muse", &t["muse"], "NEW", Some(&saved)).unwrap(),
+            sv(&["muse", "resume", "NEW"])
+        );
     }
 }

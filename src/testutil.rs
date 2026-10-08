@@ -58,3 +58,17 @@ pub fn backdate(path: &Path, secs: u64) {
         std::time::SystemTime::now() - std::time::Duration::from_secs(secs),
     );
 }
+
+/// Anonymous pipe as `(reader, writer)`. Test-only (stdin-drain seams).
+#[cfg(unix)]
+pub fn pipe() -> (std::fs::File, std::fs::File) {
+    let mut fds = [0; 2];
+    assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+    unsafe {
+        use std::os::fd::FromRawFd;
+        (
+            std::fs::File::from_raw_fd(fds[0]),
+            std::fs::File::from_raw_fd(fds[1]),
+        )
+    }
+}

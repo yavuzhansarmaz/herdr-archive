@@ -106,6 +106,34 @@ fn find_log(root: &Path, sid: &str) -> Option<PathBuf> {
     None
 }
 
+/// Candidates for explicit session ids (detection-ambiguity scoping):
+/// exactly one entry per id, newest-first, workspace matches flagged —
+/// the same row shape as [`candidates`]. Unlike [`candidates`], no scan
+/// caps or age cutoff apply: the caller already validated these ids, and
+/// the picker must list every one. `base` overrides the store root
+/// (tests); None uses the real one. A log that vanished since validation
+/// still yields its row (mtime 0, unmatched) so the count never shrinks.
+pub fn candidates_for_ids(ids: &[String], cwd: &str, base: Option<&Path>) -> Vec<Candidate> {
+    let root = base.map(PathBuf::from).unwrap_or_else(sessions_base);
+    let mut out = Vec::new();
+    for id in ids {
+        let log = find_log(&root, id);
+        let mtime = log.as_ref().map(|p| mtime_secs(p)).unwrap_or(0.0);
+        let matched = log.as_ref().is_some_and(|p| mentions_workspace(p, cwd));
+        out.push(Candidate {
+            id: id.clone(),
+            mtime,
+            matched,
+        });
+    }
+    out.sort_by(|a, b| {
+        b.mtime
+            .partial_cmp(&a.mtime)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    out
+}
+
 /// The session.jsonl path for an exact session id (for history readers).
 pub fn session_file(session_id: &str) -> Option<PathBuf> {
     if !crate::history::valid_session_id(session_id) {
@@ -339,6 +367,42 @@ mod tests {
             Some(uuid)
         );
         assert_eq!(resolve_name("uq", Some(&dir)), None);
+    }
+
+    #[test]
+    fn explicit_ids_yield_exactly_those_newest_first() {
+        // Ambiguity scoping: the picker lists exactly these ids — no scan
+        // caps, no age cutoff — newest-first with workspace matches flagged.
+        let (_g, dir) = testutil::tempdir();
+        write_log(
+            &dir,
+            "id-new-nomatch",
+            &[r#"{"workspace_root":"/elsewhere"}"#],
+        );
+        write_log(&dir, "id-old-match", &[r#"{"workspace_root":"/work/a"}"#]);
+        let old = dir
+            .join("2026")
+            .join("01")
+            .join("02")
+            .join("id-old-match")
+            .join("session.jsonl");
+        testutil::backdate(&old, 61 * 86400); // past the 60-day cutoff
+        let cands = candidates_for_ids(
+            &["id-old-match".to_string(), "id-new-nomatch".to_string()],
+            "/work/a",
+            Some(&dir),
+        );
+        assert_eq!(cands.len(), 2);
+        assert_eq!(cands[0].id, "id-new-nomatch");
+        assert!(!cands[0].matched);
+        assert_eq!(cands[1].id, "id-old-match");
+        assert!(cands[1].matched);
+        // A log that vanished since validation still yields its row, so the
+        // picker count never shrinks below the popup count.
+        let cands = candidates_for_ids(&["gone".to_string()], "/work/a", Some(&dir));
+        assert_eq!(cands.len(), 1);
+        assert_eq!(cands[0].id, "gone");
+        assert!(!cands[0].matched);
     }
 
     #[test]

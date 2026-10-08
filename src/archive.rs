@@ -299,7 +299,14 @@ fn launch_argv(
         if argv.is_empty() {
             continue;
         }
-        if proc.get("name").and_then(Value::as_str) == Some(entry.program.as_str())
+        // The reported process name goes through the same matcher: versioned
+        // binaries (muse-bin-1.4.x-…) report versioned names too. Exact for
+        // every kind except muse (basename-prefix), so behavior is unchanged
+        // outside muse.
+        if proc
+            .get("name")
+            .and_then(Value::as_str)
+            .is_some_and(|n| agents::matches_program(entry, n))
             || agents::matches_program(entry, &argv[0])
         {
             matches.push(argv);
@@ -477,8 +484,9 @@ impl From<Skip> for CaptureError {
 
 /// Build the archive record for a tab. Returns (record, session_files).
 /// `overrides`: pane_id -> user-confirmed session value. `provenance`:
-/// pane_id -> resolved_by marker for overrides ("scanner:<kind>" or
-/// "manual-paste"; defaults to "manual-paste" when absent).
+/// pane_id -> resolved_by marker for overrides ("scanner:<kind>",
+/// "detect:ambiguous", "manual-paste", or a silent "detect:*" hit;
+/// defaults to "manual-paste" when absent).
 /// `archive_name`: user-given archive name, stored as the additive `name`
 /// field; None omits it (sweeps, old records).
 #[allow(clippy::too_many_arguments)]

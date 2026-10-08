@@ -60,6 +60,102 @@ fn validate_paste(agent: &str, answer: &str, store_base: Option<&Path>) -> Resul
     }
 }
 
+/// Numbered-list branch shared by the scanner picker and the
+/// ambiguity-scoped picker: `header` names the list, `list_mark` is the
+/// `resolved_by` marker for a default/digit pick.
+fn pick_from_list(
+    agent: &str,
+    cands: Vec<scan::Candidate>,
+    header: &str,
+    list_mark: &str,
+    print_fn: PrintFn<'_>,
+    input_fn: InputFn<'_>,
+    store_base: Option<&Path>,
+) -> Result<Pick, ()> {
+    print_fn(header);
+    for (i, c) in cands.iter().enumerate() {
+        print_fn(&format!(
+            "  {}. {}{}  {} ago",
+            i + 1,
+            if c.matched { "*" } else { "~" },
+            c.id.chars().take(8).collect::<String>(),
+            age(c.mtime)
+        ));
+    }
+    for _ in 0..MAX_ATTEMPTS {
+        let answer = input_fn("Session [1], paste an id, 's' for shell, 'q' to cancel: ")?;
+        let answer = answer.trim();
+        if answer.is_empty() {
+            return Ok((
+                Verdict::Session,
+                Some(cands[0].id.clone()),
+                Some(list_mark.to_string()),
+            ));
+        }
+        if answer == "q" {
+            return Ok((Verdict::Abort, None, None));
+        }
+        if answer == "s" {
+            return Ok((Verdict::Shell, None, None));
+        }
+        if !answer.is_empty()
+            && answer.bytes().all(|b| b.is_ascii_digit())
+            && let Ok(n) = answer.parse::<usize>()
+            && (1..=cands.len()).contains(&n)
+        {
+            return Ok((
+                Verdict::Session,
+                Some(cands[n - 1].id.clone()),
+                Some(list_mark.to_string()),
+            ));
+        }
+        match validate_paste(agent, answer, store_base) {
+            Ok(()) => {
+                return Ok((
+                    Verdict::Session,
+                    Some(answer.to_string()),
+                    Some("manual-paste".to_string()),
+                ));
+            }
+            Err(reason) => print_fn(&format!(
+                "{reason} Pick 1-{}, paste an id, 's' or 'q'.",
+                cands.len()
+            )),
+        }
+    }
+    print_fn("Too many invalid answers; cancelling.");
+    Ok((Verdict::Abort, None, None))
+}
+
+/// The ambiguity-scoped picker: detection found 2+ validated live sessions
+/// for this pane and could not choose silently, so the user picks from
+/// exactly those — never the full scanner history. Same answers as the
+/// scanner list (default/digit/paste/shell/cancel); a list pick records
+/// [`crate::detect::PROVENANCE_AMBIGUOUS`].
+fn pick_ambiguous_sessions(
+    pane: &Map<String, Value>,
+    agent: &str,
+    cands: Vec<scan::Candidate>,
+    print_fn: PrintFn<'_>,
+    input_fn: InputFn<'_>,
+    store_base: Option<&Path>,
+) -> Result<Pick, ()> {
+    let pane_id = pane.get("pane_id").and_then(Value::as_str).unwrap_or("?");
+    let header = format!(
+        "Pane {pane_id} has {} candidate {agent} sessions; pick which one to resume ('*' matched this directory):",
+        cands.len()
+    );
+    pick_from_list(
+        agent,
+        cands,
+        &header,
+        crate::detect::PROVENANCE_AMBIGUOUS,
+        print_fn,
+        input_fn,
+        store_base,
+    )
+}
+
 fn pick_scanned_session(
     pane: &Map<String, Value>,
     agent: &str,
@@ -103,61 +199,18 @@ fn pick_scanned_session(
         print_fn("Too many invalid answers; cancelling.");
         return Ok((Verdict::Abort, None, None));
     }
-    print_fn(&format!(
+    let header = format!(
         "Pane {pane_id} runs {agent} with no reported session; pick which one to resume ('*' matched this directory):"
-    ));
-    for (i, c) in cands.iter().enumerate() {
-        print_fn(&format!(
-            "  {}. {}{}  {} ago",
-            i + 1,
-            if c.matched { "*" } else { "~" },
-            c.id.chars().take(8).collect::<String>(),
-            age(c.mtime)
-        ));
-    }
-    for _ in 0..MAX_ATTEMPTS {
-        let answer = input_fn("Session [1], paste an id, 's' for shell, 'q' to cancel: ")?;
-        let answer = answer.trim();
-        if answer.is_empty() {
-            return Ok((
-                Verdict::Session,
-                Some(cands[0].id.clone()),
-                Some(scanner_mark),
-            ));
-        }
-        if answer == "q" {
-            return Ok((Verdict::Abort, None, None));
-        }
-        if answer == "s" {
-            return Ok((Verdict::Shell, None, None));
-        }
-        if !answer.is_empty()
-            && answer.bytes().all(|b| b.is_ascii_digit())
-            && let Ok(n) = answer.parse::<usize>()
-            && (1..=cands.len()).contains(&n)
-        {
-            return Ok((
-                Verdict::Session,
-                Some(cands[n - 1].id.clone()),
-                Some(scanner_mark),
-            ));
-        }
-        match validate_paste(agent, answer, store_base) {
-            Ok(()) => {
-                return Ok((
-                    Verdict::Session,
-                    Some(answer.to_string()),
-                    Some("manual-paste".to_string()),
-                ));
-            }
-            Err(reason) => print_fn(&format!(
-                "{reason} Pick 1-{}, paste an id, 's' or 'q'.",
-                cands.len()
-            )),
-        }
-    }
-    print_fn("Too many invalid answers; cancelling.");
-    Ok((Verdict::Abort, None, None))
+    );
+    pick_from_list(
+        agent,
+        cands,
+        &header,
+        &scanner_mark,
+        print_fn,
+        input_fn,
+        store_base,
+    )
 }
 
 fn shell_or_abort(
@@ -176,7 +229,9 @@ fn shell_or_abort(
 }
 
 /// Confirmed sessions plus their `resolved_by` provenance markers
-/// (`scanner:<kind>` for a picked candidate, `manual-paste` for a pasted id).
+/// (`scanner:<kind>` for a picked scanner candidate, `detect:ambiguous` for
+/// a picked ambiguity-scoped candidate, `manual-paste` for a pasted id,
+/// `detect:argv`/`detect:fd`/`detect:lock` for silent detections).
 #[derive(Debug, Default)]
 pub struct Resolved {
     pub overrides: BTreeMap<String, String>,
@@ -191,6 +246,50 @@ pub fn resolve_missing_sessions(
     table: &BTreeMap<String, agents::Entry>,
     input_fn: InputFn<'_>,
     print_fn: PrintFn<'_>,
+) -> Result<Option<Resolved>, ()> {
+    resolve_inner(panes, table, input_fn, print_fn, None, None)
+}
+
+/// `resolve_missing_sessions` plus live-session detection: muse panes with
+/// no reported session first try `detect::detect_live_session`; a
+/// Certain/Strong hit is used silently (provenance recorded), anything else
+/// falls through to the unchanged picker flow. Non-muse panes never touch
+/// detection, and detection never prompts.
+#[allow(clippy::result_unit_err)]
+pub fn resolve_missing_sessions_with_client(
+    panes: &[Map<String, Value>],
+    table: &BTreeMap<String, agents::Entry>,
+    input_fn: InputFn<'_>,
+    print_fn: PrintFn<'_>,
+    client: &mut dyn crate::Herdr,
+) -> Result<Option<Resolved>, ()> {
+    resolve_inner(panes, table, input_fn, print_fn, Some(client), None)
+}
+
+/// Test seam: like `resolve_missing_sessions_with_client` but detection (and
+/// paste validation) use `store_base` instead of the real muse store.
+/// Production passes None.
+#[doc(hidden)]
+#[allow(clippy::result_unit_err)]
+pub fn resolve_missing_sessions_with_store(
+    panes: &[Map<String, Value>],
+    table: &BTreeMap<String, agents::Entry>,
+    input_fn: InputFn<'_>,
+    print_fn: PrintFn<'_>,
+    client: &mut dyn crate::Herdr,
+    store_base: Option<&Path>,
+) -> Result<Option<Resolved>, ()> {
+    resolve_inner(panes, table, input_fn, print_fn, Some(client), store_base)
+}
+
+#[allow(clippy::result_unit_err)]
+fn resolve_inner(
+    panes: &[Map<String, Value>],
+    table: &BTreeMap<String, agents::Entry>,
+    input_fn: InputFn<'_>,
+    print_fn: PrintFn<'_>,
+    mut client: Option<&mut dyn crate::Herdr>,
+    store_base: Option<&Path>,
 ) -> Result<Option<Resolved>, ()> {
     let mut resolved = Resolved::default();
     for pane in panes {
@@ -208,13 +307,67 @@ pub fn resolve_missing_sessions(
             // Only a missing value needs a question.
             continue;
         }
-        let (kind, value, provenance) = if table.contains_key(agent) {
-            match scan::candidates_for(agent, pane_cwd(pane)) {
-                Some(cands) => pick_scanned_session(pane, agent, cands, print_fn, input_fn, None)?,
-                None => {
-                    let (k, v) = shell_or_abort(pane, "has no session id.", print_fn, input_fn)?;
-                    (k, v, None)
+        // Live detection before the picker: muse-only (the signals and the
+        // store are muse-specific), and only when the kind is resumable. A
+        // hit is used silently; lock-leg ambiguity scopes the picker below
+        // to exactly the validated live sessions; anything else falls
+        // through to the scanner picker unchanged.
+        let mut scoped: Option<Vec<scan::Candidate>> = None;
+        if agent == "muse" && table.contains_key(agent) {
+            if let (Some(pane_id), Some(c)) = (
+                pane.get("pane_id").and_then(Value::as_str),
+                client.as_deref_mut(),
+            ) {
+                let hit = match store_base {
+                    Some(base) => {
+                        crate::detect::detect_live_session_with_store(pane_id, c, Some(base))
+                    }
+                    None => crate::detect::detect_live_session(pane_id, c),
+                };
+                if let Some(d) = hit {
+                    print_fn(&format!(
+                        "Pane {pane_id}: using live muse session {} ({}).",
+                        d.id.chars().take(8).collect::<String>(),
+                        d.provenance
+                    ));
+                    resolved.overrides.insert(pane_id.to_string(), d.id);
+                    resolved
+                        .provenance
+                        .insert(pane_id.to_string(), d.provenance.to_string());
+                    continue;
                 }
+                // No silent hit: recompute ambiguity fresh at resolve time
+                // (the popup preview is informational only — never trusted).
+                let ids = match store_base {
+                    Some(base) => {
+                        crate::detect::ambiguous_live_sessions_with_store(pane_id, c, Some(base))
+                    }
+                    None => crate::detect::ambiguous_live_sessions(pane_id, c),
+                };
+                if ids.len() >= 2 {
+                    let cands =
+                        crate::scan::muse::candidates_for_ids(&ids, pane_cwd(pane), store_base);
+                    if !cands.is_empty() {
+                        scoped = Some(cands);
+                    }
+                }
+            }
+        }
+        let (kind, value, provenance) = if table.contains_key(agent) {
+            match scoped {
+                Some(cands) => {
+                    pick_ambiguous_sessions(pane, agent, cands, print_fn, input_fn, store_base)?
+                }
+                None => match scan::candidates_for(agent, pane_cwd(pane)) {
+                    Some(cands) => {
+                        pick_scanned_session(pane, agent, cands, print_fn, input_fn, store_base)?
+                    }
+                    None => {
+                        let (k, v) =
+                            shell_or_abort(pane, "has no session id.", print_fn, input_fn)?;
+                        (k, v, None)
+                    }
+                },
             }
         } else {
             let (k, v) = shell_or_abort(
@@ -599,6 +752,65 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
+    fn stale_enter_drained_before_picker_waits_for_real_answer() {
+        // The live incident: a stray Enter buffered after the single-key
+        // confirm must be drained before the picker prompt, or the picker
+        // consumes it as default-accept and the user never chooses.
+        use std::io::{BufRead, Write};
+        use std::os::fd::AsRawFd;
+        let cands = || {
+            vec![
+                scan::Candidate {
+                    id: "aaa".to_string(),
+                    mtime: scan::now_secs(),
+                    matched: true,
+                },
+                scan::Candidate {
+                    id: "bbb".to_string(),
+                    mtime: scan::now_secs() - 100.0,
+                    matched: false,
+                },
+            ]
+        };
+        fn pipe_input<'a>(
+            rd: &'a std::fs::File,
+        ) -> impl FnMut(&str) -> Result<String, ()> + use<'a> {
+            let mut reader = std::io::BufReader::new(rd);
+            move |_: &str| -> Result<String, ()> {
+                let mut line = String::new();
+                reader.read_line(&mut line).map_err(|_| ())?;
+                if line.is_empty() {
+                    return Err(());
+                }
+                Ok(line)
+            }
+        }
+        let p = pane("muse", "p1");
+        // Control (no drain): the stale newline is consumed as Enter, so
+        // the default wins without the user choosing.
+        let (rd, mut wr) = crate::testutil::pipe();
+        wr.write_all(b"\n2\n").unwrap();
+        drop(wr);
+        let mut print = |_: &str| {};
+        let (k, v, _) =
+            pick_scanned_session(&p, "muse", cands(), &mut print, &mut pipe_input(&rd), None)
+                .unwrap();
+        assert_eq!((k, v.as_deref()), (Verdict::Session, Some("aaa")));
+        // Fix: draining first makes the picker wait for the real answer.
+        let (rd, mut wr) = crate::testutil::pipe();
+        wr.write_all(b"\n").unwrap(); // stray Enter after the confirm key
+        crate::confirm::drain_fd(rd.as_raw_fd());
+        wr.write_all(b"2\n").unwrap(); // typed AT the picker
+        drop(wr);
+        let mut print = |_: &str| {};
+        let (k, v, _) =
+            pick_scanned_session(&p, "muse", cands(), &mut print, &mut pipe_input(&rd), None)
+                .unwrap();
+        assert_eq!((k, v.as_deref()), (Verdict::Session, Some("bbb")));
+    }
+
+    #[test]
     fn candidates_branch_paste_reprompts_with_reason() {
         let p = pane("muse", "p1");
         let (_g, dir) = crate::testutil::tempdir();
@@ -633,5 +845,80 @@ mod tests {
             printed.iter().any(|l| l.contains("No muse session")),
             "{printed:?}"
         );
+    }
+
+    #[test]
+    fn ambiguous_list_names_count_and_marks_picks() {
+        // The ambiguity-scoped list: header names the exact count, list
+        // picks record detect:ambiguous, and paste/shell/cancel still work.
+        let p = pane("muse", "p1");
+        let (_g, dir) = crate::testutil::tempdir();
+        muse_store(&dir, &[("aaa", &[r#"{"x":1}"#])]);
+        let cands = || {
+            vec![
+                scan::Candidate {
+                    id: "aaa".to_string(),
+                    mtime: scan::now_secs(),
+                    matched: true,
+                },
+                scan::Candidate {
+                    id: "bbb".to_string(),
+                    mtime: scan::now_secs() - 100.0,
+                    matched: false,
+                },
+            ]
+        };
+        // Default: newest with the ambiguity marker, header naming the count.
+        let mut printed = Vec::new();
+        let mut print = |s: &str| printed.push(s.to_string());
+        let mut input = |_: &str| -> Result<String, ()> { Ok(String::new()) };
+        let (k, v, prov) =
+            pick_ambiguous_sessions(&p, "muse", cands(), &mut print, &mut input, Some(&dir))
+                .unwrap();
+        assert_eq!(
+            (k, v, prov),
+            (
+                Verdict::Session,
+                Some("aaa".to_string()),
+                Some("detect:ambiguous".to_string())
+            )
+        );
+        assert!(
+            printed
+                .iter()
+                .any(|l| l.contains("2 candidate muse sessions")),
+            "{printed:?}"
+        );
+        let rows: Vec<_> = printed.iter().filter(|l| l.starts_with("  ")).collect();
+        assert_eq!(rows.len(), 2, "{printed:?}");
+        // Digit pick keeps the marker.
+        let mut printed = Vec::new();
+        let mut print = |s: &str| printed.push(s.to_string());
+        let mut input = |_: &str| -> Result<String, ()> { Ok("2".to_string()) };
+        let (k, v, prov) =
+            pick_ambiguous_sessions(&p, "muse", cands(), &mut print, &mut input, Some(&dir))
+                .unwrap();
+        assert_eq!(
+            (k, v, prov),
+            (
+                Verdict::Session,
+                Some("bbb".to_string()),
+                Some("detect:ambiguous".to_string())
+            )
+        );
+        // Paste of a stored id, shell, and cancel round out the answers.
+        for (answer, want) in [
+            ("aaa", Verdict::Session),
+            ("s", Verdict::Shell),
+            ("q", Verdict::Abort),
+        ] {
+            let mut printed = Vec::new();
+            let mut print = |s: &str| printed.push(s.to_string());
+            let mut input = |_: &str| -> Result<String, ()> { Ok(answer.to_string()) };
+            let (k, ..) =
+                pick_ambiguous_sessions(&p, "muse", cands(), &mut print, &mut input, Some(&dir))
+                    .unwrap();
+            assert_eq!(k, want, "answer {answer:?}");
+        }
     }
 }

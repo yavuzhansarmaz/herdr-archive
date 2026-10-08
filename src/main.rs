@@ -328,7 +328,6 @@ fn open_archive(
         );
         return Ok(());
     }
-    let lines = confirm::lines(&found.label, &found.activity, &found.warnings);
     let live: Option<Vec<Map<String, Value>>> = client
         .call("pane.list", Value::Object(Map::new()))
         .ok()
@@ -337,6 +336,38 @@ fn open_archive(
                 .and_then(Value::as_array)
                 .map(|a| a.iter().filter_map(|p| p.as_object().cloned()).collect())
         });
+    // Detection-aware question: when the tab holds exactly one muse pane
+    // without a reported session, preview what confirm-time detection will
+    // find so the popup names the session instead of crying unknown.
+    // Informational only — confirm re-runs detection and never trusts this.
+    let activity = match &live {
+        Some(panes) => {
+            let mut candidates = panes.iter().filter(|p| {
+                p.get("tab_id").and_then(Value::as_str) == Some(found.tab_id.as_str())
+                    && p.get("agent").and_then(Value::as_str) == Some("muse")
+                    && table.contains_key("muse")
+                    && !p
+                        .get("agent_session")
+                        .and_then(Value::as_object)
+                        .and_then(|s| s.get("value"))
+                        .and_then(Value::as_str)
+                        .is_some_and(|v| !v.is_empty())
+            });
+            let (first, second) = (candidates.next(), candidates.next());
+            match (first, second) {
+                (Some(pane), None) => match pane.get("pane_id").and_then(Value::as_str) {
+                    Some(pane_id) => {
+                        let preview = herdr_archive::detect::preview_live_session(pane_id, client);
+                        herdr_archive::detect::popup_activity(&found.activity, &preview)
+                    }
+                    None => found.activity.clone(),
+                },
+                _ => found.activity.clone(),
+            }
+        }
+        None => found.activity.clone(),
+    };
+    let lines = confirm::lines(&found.label, &activity, &found.warnings);
     // Size the popup to its actual content: scan the same directories the
     // confirm step will ask about, so the list fits without a giant box.
     // (Scans run again at confirm time; a store changing in between only
@@ -490,17 +521,31 @@ fn confirm_archive(
         .filter_map(|p| p.get("terminal_id").and_then(Value::as_str))
         .collect();
     let wanted_terms: HashSet<&str> = wanted.iter().map(String::as_str).collect();
+    // A stray Enter typed after the single-key confirm (habit, or while
+    // detection runs) sits buffered on stdin, and the first line prompt
+    // would consume it as "accept default" — the user never chooses. Drain
+    // once before that first prompt (shared across the session picker and
+    // the archive-name question, whichever runs first) so only keys typed
+    // AT the prompt count.
+    let mut first_prompt = true;
+    let mut input = |prompt: &str| -> Result<String, ()> {
+        if first_prompt {
+            first_prompt = false;
+            confirm::drain_stdin();
+        }
+        popup_input(prompt)
+    };
     if live.is_some() && panes_terms == wanted_terms {
         let resolved = (|| -> Result<Option<manual::Resolved>, String> {
             let cfg =
                 config::load(Some(config_dir().as_path()), true).map_err(|e| e.to_string())?;
-            let mut input = popup_input;
             let mut print = popup_print;
-            manual::resolve_missing_sessions(
+            manual::resolve_missing_sessions_with_client(
                 &panes,
                 &agents::table(Some(&cfg.agents)),
                 &mut input,
                 &mut print,
+                &mut *client,
             )
             .map_err(|_| "eof".to_string())
         })();
@@ -524,7 +569,6 @@ fn confirm_archive(
             }
         }
     }
-    let mut input = popup_input;
     let mut print = popup_print;
     let archive_name = match confirm::ask_name(&mut input, &mut print, &label) {
         Err(_) => return, // EOF/interrupt: cancel quietly

@@ -79,7 +79,9 @@ Additive optional fields (all `Option`, omitted when absent):
   from an agent-reported `resume_argv` (§7.1). Python ignores it and falls
   back to table-built argv (see asymmetry below).
 - `panes[<id>].resolved_by: string` — provenance marker: `herdr`,
-  `resume_argv`, `scanner:<kind>`, `manual-paste`, `shell`. Debugging aid.
+  `resume_argv`, `scanner:<kind>`, `manual-paste`, `shell`,
+  `detect:argv`/`detect:fd`/`detect:lock` (silent), `detect:ambiguous`
+  (picked from the ambiguity-scoped list). Debugging aid.
 - Top-level `tool: "herdr-archive <version>"` — provenance marker.
 - Top-level `name: string` — user-given archive name, asked in the
   archive-confirm flow (default: tab label). Shown as the picker's row
@@ -150,6 +152,7 @@ src/
   picker_tty.rs  crossterm event loop: keys, wheel/click/dclick, resize,
                SIGINT-ignore during restore, popup-too-small
   confirm.rs   lines() wrap/sanitize, read_key (crossterm-based)
+  detect/mod.rs  live muse session detection via argv/fd (Linux-only; §7.5)
   manual.rs    generalized resolve_missing_sessions (any scanner kind)
   scan.rs      Scanner trait + registry; scan/gemini.rs, cline.rs, kiro.rs,
                maki.rs, muse.rs, amp.rs (CLI-backed)
@@ -427,6 +430,38 @@ record's `workspace_id` is still live and prompts only then —
 `[Enter] new workspace, [o] original, [Esc] cancel` (Enter = new). Records
 with no recorded id (old/Python) restore into a new workspace with no
 prompt. The `workspace_id` record field is additive; Python ignores it.
+
+### 7.5 Live-session detection (muse, Linux-only) — post-v0 addendum
+
+Before the manual picker (§7.3) asks about a muse pane with no reported
+session, `detect::detect_live_session` tries to bind the pane to its
+already-running session — a new step between discovery legs 2 and 3 (§7.1),
+manual flow only (auto-sweep never detects, same as scanners). Leg (a):
+`pane.process_info` foreground `muse*` pids are scanned for a
+`resume <id>` argv → Certain (`resolved_by = "detect:argv"`). Leg (b):
+else each muse pid's `/proc/<pid>/fd` symlinks are scanned for an open
+`<…>/sessions/<…>/<id>/session.jsonl` (a same-dir `.session.lock` is a
+corroborating bonus) → Strong (`"detect:fd"`). Leg (c): else the same fd
+lists are scanned for `<…>/sessions/<…>/<id>/.session.lock` targets (any
+`subagent/` path ignored — one pid was seen holding its own lock plus
+subagent locks); exactly one distinct id → Strong (`"detect:lock"`), zero
+→ None for the picker. Two or more distinct ids validate each id against
+the store: two-plus validated is ambiguity — the picker lists exactly
+those sessions (`resolved_by = "detect:ambiguous"` for the pick, same
+paste/shell/cancel answers), recomputed fresh at resolve time (the popup's
+"N candidate sessions" preview is informational only); fewer than two
+validated is None for the unchanged scanner picker. All legs validate the
+id against the local muse store (`scan::muse::session_exists`); anything
+unvalidated returns None and the picker runs unchanged. The whole function
+is Linux-gated (the fd leg needs `/proc`); other OSes return None. New
+`resolved_by` values only — no record/state-schema change. Input guard:
+stale stdin bytes are drained once before the first line prompt after the
+single-key confirm, so a stray Enter can never accept a default unseen.
+Companion fix:
+the installed muse binary is versioned (`muse-bin-1.4.3-…`,
+`muse-bin-1.4.4-…`), so `agents::matches_program` matches muse by basename
+prefix (`Entry::prefix_match`, preserved through config overrides) in
+launch/process detection; relaunch stays plain `muse` (resolves on PATH).
 
 ## 8. Socket transport (decision) + methods used
 

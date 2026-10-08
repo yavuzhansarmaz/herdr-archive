@@ -263,6 +263,49 @@ pub fn lines_from_preview(preview: &Value) -> Vec<String> {
     lines(label, activity, &warnings)
 }
 
+/// Discard bytes already queued on stdin: a key typed after the single-key
+/// confirm (a habitual Enter, or one typed while detection runs) would
+/// otherwise be consumed by the first line prompt as "accept default" —
+/// the user never chooses. The caller drains once, just before that first
+/// prompt, so only keys typed AT the prompt count; later prompts follow
+/// consumed lines and need no drain. Never fails: closed/EOF stdin is a
+/// silent no-op.
+pub fn drain_stdin() {
+    #[cfg(unix)]
+    drain_fd(0);
+}
+
+/// [`drain_stdin`] over an explicit fd — the unit-test seam (pipes).
+///
+/// The kernel TTY input queue is flushed first (`tcflush(TCIFLUSH)`), which
+/// also drops a partial line typed but not yet submitted — a read cannot
+/// see that in cooked mode. Anything still readable is then drained without
+/// blocking (pipes, and anything `tcflush` cannot discard). `tcflush`
+/// fails harmlessly on non-TTY fds.
+#[cfg(unix)]
+pub fn drain_fd(fd: std::os::fd::RawFd) {
+    unsafe {
+        libc::tcflush(fd, libc::TCIFLUSH);
+    }
+    unsafe {
+        let flags = libc::fcntl(fd, libc::F_GETFL);
+        if flags < 0 {
+            return;
+        }
+        if libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) < 0 {
+            return;
+        }
+        let mut buf = [0u8; 1024];
+        loop {
+            let n = libc::read(fd, buf.as_mut_ptr().cast::<libc::c_void>(), buf.len());
+            if n <= 0 {
+                break;
+            }
+        }
+        libc::fcntl(fd, libc::F_SETFL, flags);
+    }
+}
+
 /// One key from the terminal as a byte, read in raw mode; the terminal's
 /// previous mode is restored on every path. Pending input is drained first,
 /// so a key typed before the question was drawn is dropped rather than
@@ -417,5 +460,35 @@ mod tests {
         let mut input = |_: &str| -> Result<String, ()> { Err(()) };
         let mut print = |_: &str| {};
         assert!(ask_name(&mut input, &mut print, "mytab").is_err());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn drain_discards_stale_bytes_before_the_line_prompt() {
+        // The incident shape: a stray Enter buffered after the single-key
+        // confirm is drained, so the prompt's line read waits for the real
+        // answer typed AT the prompt instead of consuming the stale newline
+        // as "accept default".
+        use std::io::{BufRead, Write};
+        use std::os::fd::AsRawFd;
+        let (rd, mut wr) = crate::testutil::pipe();
+        wr.write_all(b"\n").unwrap();
+        drain_fd(rd.as_raw_fd());
+        wr.write_all(b"2\n").unwrap();
+        drop(wr);
+        let mut line = String::new();
+        std::io::BufReader::new(&rd).read_line(&mut line).unwrap();
+        assert_eq!(line, "2\n");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn drain_on_empty_or_bad_fd_is_a_silent_noop() {
+        // Nothing queued: returns at once (a blocking read would hang the
+        // test). A bad fd: never raises.
+        use std::os::fd::AsRawFd;
+        let (rd, _wr) = crate::testutil::pipe();
+        drain_fd(rd.as_raw_fd());
+        drain_fd(-1);
     }
 }

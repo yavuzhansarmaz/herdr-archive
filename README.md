@@ -183,6 +183,15 @@ Enter keeps the tab's label; typing a name (up to 80 characters) stores it
 with the archive, and the restore picker, `list`, and notifications show it
 instead of the label. The tab label itself is kept untouched, so archives
 stay copy-compatible with the Python shelf.
+For muse panes with no reported session, Archive first checks the live
+process instead of asking: a `resume <id>` command line, or (Linux only) an
+open `session.jsonl` handle — or, when no log is held open, exactly one
+`.session.lock` — identifies the session silently. Two or more distinct
+locks holding validated sessions stays ambiguous: the picker then lists
+exactly those sessions (`resolved_by` `detect:ambiguous`) instead of the
+scanner history. Anything else uncertain falls back to the picker as
+before. Records note the source in `resolved_by` (`detect:argv`,
+`detect:fd`, `detect:lock`, `detect:ambiguous`).
 Unlike a sweep, this ignores `idle_days` and dry-run mode, and archives the
 tab you are looking at. The question also warns about anything unusual, and
 `y` still archives:
@@ -240,7 +249,7 @@ state.
   can no longer archive a session that will not resume.
 - Additive record fields: `panes[<id>].resume_argv`,
   `panes[<id>].resolved_by` (`herdr`, `scanner:<kind>`, `manual-paste`,
-  `shell`), top-level `tool: "herdr-archive <version>"`, top-level `name`
+  `shell`, `detect:*`), top-level `tool: "herdr-archive <version>"`, top-level `name`
   (the user-given archive name; the picker falls back to the tab label
   when it is absent), `workspace.workspace_id` (the original workspace
   id, offered as a restore choice when still live). Restore replays a

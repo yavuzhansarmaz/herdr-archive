@@ -10,6 +10,7 @@ pub mod api;
 pub mod archive;
 pub mod config;
 pub mod confirm;
+pub mod detect;
 pub mod history;
 pub mod log;
 pub mod manual;
