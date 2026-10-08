@@ -25,7 +25,7 @@ config format. Archive records are cross-compatible both ways.
 ## Quick start
 
 ```sh
-herdr plugin install owner/herdr-archive
+herdr plugin install yavuzhansarmaz/herdr-archive
 ```
 
 or from a checkout:

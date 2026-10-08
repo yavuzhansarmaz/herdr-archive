@@ -29,7 +29,7 @@ Justification: herdr keys everything by plugin id (action keybindings
 and refuses install-over-link, so the id **must** differ from the Python
 plugin's `shelf`. `herdr-archive` is the published name: repo name, plugin
 id, and binary are all the same token, following the `herdr-<thing>`
-community convention, so `herdr plugin install owner/herdr-archive` yields
+community convention, so `herdr plugin install yavuzhansarmaz/herdr-archive` yields
 id `herdr-archive` with no surprise. Name research (GitHub repo search,
 `herdr-plugin` topic scan, crates.io) found no collision; the longer
 keybinding prefix (`herdr-archive.restore`) is typed once into config.
